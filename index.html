@@ -371,7 +371,8 @@
                 targetCount: 10,
                 maxScanLimit: 500,
                 ranges: CLOUDFLARE_RANGES.join('\n'),
-                port: 2096
+                port: 2096,
+                portStrategy: 'auto' // 'auto', 'keep-original', 'custom'
             });
             
             const [results, setResults] = useState([]);
@@ -507,6 +508,37 @@
                 return portResults.length > 0 ? portResults[0].port : null;
             };
 
+            const getOriginalPort = (configStr) => {
+                try {
+                    const parsed = parseConfig(configStr);
+                    if (parsed.type === 'vless' || parsed.type === 'trojan') {
+                        const uriParts = parsed.data.split('@');
+                        const serverPart = uriParts[1];
+                        const afterAt = serverPart.split('#')[0];
+                        const [oldAddress, oldPort] = afterAt.split(':');
+                        return parseInt(oldPort);
+                    } else if (parsed.type === 'vmess') {
+                        return parseInt(parsed.data.port);
+                    } else if (parsed.type === 'json') {
+                        if (parsed.data.outbounds && parsed.data.outbounds[0]) {
+                            const outbound = parsed.data.outbounds[0];
+                            if (outbound.protocol === 'vless' || outbound.protocol === 'vmess') {
+                                if (outbound.settings.vnext && outbound.settings.vnext[0]) {
+                                    return outbound.settings.vnext[0].port;
+                                }
+                            } else if (outbound.protocol === 'trojan') {
+                                if (outbound.settings.servers && outbound.settings.servers[0]) {
+                                    return outbound.settings.servers[0].port;
+                                }
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.error('Error getting original port:', e);
+                }
+                return null;
+            };
+
             const startOptimization = async () => {
                 if (isRunning) return;
                 
@@ -533,6 +565,16 @@
                     let bestHost = null;
                     let bestPort = null;
 
+                    if (config.portStrategy === 'keep-original') {
+                        // Use the original port from the config
+                        bestPort = getOriginalPort(config.input);
+                        if (!bestPort) {
+                            showNotification('Could not extract port from original config', 'error');
+                            setIsRunning(false);
+                            return;
+                        }
+                    }
+
                     if (optimizationMode === 'domain') {
                         // Test domains
                         setResults([]);
@@ -547,13 +589,19 @@
                         bestHost = domainResults[0].host;
                         setResults(domainResults.slice(0, 10));
                         
-                        // Test ports on best domain
-                        bestPort = await testPorts(bestHost);
-                        
-                        if (!bestPort) {
-                            showNotification(t.noWorkingPorts, 'error');
-                            setIsRunning(false);
-                            return;
+                        // Test ports on best domain only if port strategy is not 'keep-original'
+                        if (config.portStrategy !== 'keep-original') {
+                            if (config.portStrategy === 'auto') {
+                                bestPort = await testPorts(bestHost);
+                            } else if (config.portStrategy === 'custom') {
+                                bestPort = config.port;
+                            }
+                            
+                            if (!bestPort) {
+                                showNotification(t.noWorkingPorts, 'error');
+                                setIsRunning(false);
+                                return;
+                            }
                         }
                     } else {
                         // Test IPs
@@ -567,7 +615,16 @@
                         }
                         
                         bestHost = ipResults[0].host;
-                        bestPort = config.port; // Use the configured port for IPs
+                        
+                        // Set the port based on strategy for IP mode
+                        if (config.portStrategy === 'keep-original') {
+                            // Port already set from original config
+                        } else if (config.portStrategy === 'auto') {
+                            bestPort = config.port; // Use the configured port for IPs in auto mode
+                        } else if (config.portStrategy === 'custom') {
+                            bestPort = config.port; // Use the custom port
+                        }
+                        
                         setResults(ipResults.slice(0, 10));
                     }
 
@@ -730,16 +787,30 @@
                                                     className="w-full bg-primary border border-white/10 rounded-lg px-3 py-2 focus:border-accent focus:outline-none text-xs font-mono text-white"
                                                 />
                                             </div>
-                                            <div>
-                                                <label className="block text-xs text-gray-400 mb-1">{t.port}</label>
-                                                <input
-                                                    type="number"
-                                                    value={config.port}
-                                                    onChange={(e) => setConfig({...config, port: parseInt(e.target.value)})}
-                                                    className="w-full bg-primary border border-white/10 rounded-lg px-3 py-2 focus:border-accent focus:outline-none text-white"
-                                                />
-                                            </div>
                                         </>
+                                    )}
+                                    <div>
+                                        <label className="block text-xs text-gray-400 mb-1">Port Strategy</label>
+                                        <select
+                                            value={config.portStrategy}
+                                            onChange={(e) => setConfig({...config, portStrategy: e.target.value})}
+                                            className="w-full bg-primary border border-white/10 rounded-lg px-3 py-2 focus:border-accent focus:outline-none text-white"
+                                        >
+                                            <option value="auto">Auto (Best Cloudflare Port)</option>
+                                            <option value="keep-original">Keep Original Config Port</option>
+                                            <option value="custom">Custom Port</option>
+                                        </select>
+                                    </div>
+                                    {(config.portStrategy === 'custom' || optimizationMode === 'ip') && (
+                                        <div>
+                                            <label className="block text-xs text-gray-400 mb-1">{t.port}</label>
+                                            <input
+                                                type="number"
+                                                value={config.port}
+                                                onChange={(e) => setConfig({...config, port: parseInt(e.target.value)})}
+                                                className="w-full bg-primary border border-white/10 rounded-lg px-3 py-2 focus:border-accent focus:outline-none text-white"
+                                            />
+                                        </div>
                                     )}
                                     {optimizationMode === 'domain' && (
                                         <div className="text-sm text-gray-400">
