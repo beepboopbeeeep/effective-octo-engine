@@ -450,15 +450,18 @@
                     setStats(prev => ({ ...prev, scanned: prev.scanned + 1 }));
                 }
                 
-                return domainResults;
+                // Sort the array before returning to ensure correct order
+                return domainResults.sort((a, b) => a.latency - b.latency);
             };
 
             const testIPs = async () => {
                 const rangesList = config.ranges.split('\n').filter(r => r.trim().length > 0);
+                let foundCount = 0;
                 let scannedCount = 0;
                 const batchSize = 5;
+                const ipResults = []; // Store IP results separately
 
-                while (!stopSignal.current && stats.found < config.targetCount && scannedCount < config.maxScanLimit) {
+                while (!stopSignal.current && foundCount < config.targetCount && scannedCount < config.maxScanLimit) {
                     const batchIPs = Array.from({ length: batchSize }, () => getRandomIpFromRanges(rangesList));
                     
                     const promises = batchIPs.map(async (ip) => {
@@ -471,7 +474,9 @@
                     for (const res of batchResults) {
                         scannedCount++;
                         if (res.ping !== -1 && res.ping <= config.maxPing) {
+                            foundCount++;
                             const newResult = { host: res.ip, latency: res.ping, type: 'ip' };
+                            ipResults.push(newResult); // Add to our local array
                             setResults(prev => [...prev, newResult].sort((a, b) => a.latency - b.latency));
                             setStats(prev => ({ ...prev, found: prev.found + 1 }));
                         }
@@ -481,7 +486,8 @@
                     await new Promise(r => setTimeout(r, 50));
                 }
                 
-                return stats.found;
+                // Sort the array before returning to ensure correct order
+                return ipResults.sort((a, b) => a.latency - b.latency);
             };
 
             const testPorts = async (host) => {
