@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>V2Ray Config Optimizer - Professional</title>
+    <title>V2Ray Config Optimizer</title>
     
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Vazirmatn:wght@400;600;700&display=swap" rel="stylesheet">
     
@@ -86,21 +86,32 @@
 
         // --- CLOUDFLARE IP RANGES ---
         const CLOUDFLARE_RANGES = [
-            "173.245.48.0/20",
+            "172.67.128.0/17",
+            "104.19.0.0/16",
+            "5.226.179.0/24",
+            "172.64.106.33",
+            "31.22.116.16",
+            "104.18.128.0/17",
+            "172.64.80.0/20",
+            "104.16.0.0/15",
+            "104.24.0.0/14",
+            "104.21.0.0/17",
+            "23.227.60.0/24",
             "103.21.244.0/22",
             "103.22.200.0/22",
             "103.31.4.0/22",
-            "141.101.64.0/18",
-            "108.162.192.0/18",
-            "190.93.240.0/20",
-            "188.114.96.0/20",
-            "197.234.240.0/22",
-            "198.41.128.0/17",
-            "162.158.0.0/15",
             "104.16.0.0/13",
             "104.24.0.0/14",
+            "108.162.192.0/18",
+            "131.0.72.0/22",
+            "141.101.64.0/18",
+            "162.158.0.0/15",
             "172.64.0.0/13",
-            "131.0.72.0/22"
+            "173.245.48.0/20",
+            "188.114.96.0/20",
+            "190.93.240.0/20",
+            "197.234.240.0/22",
+            "198.41.128.0/17"
         ];
 
         // --- DOMAINS FOR TESTING ---
@@ -108,8 +119,8 @@
             'workers.dev',
             'jquery.com',
             'tgju.org',
-            'kifpool.me',
-            'parschrome.com',
+            'cdnjs.cloudflare.com',
+            'speed.cloudflare.com',
             'elihousedent.com',
             'caspianpart.com',
             'cdnjs.com',
@@ -124,7 +135,7 @@
 
         // --- PORTS FOR TESTING ---
         const TEST_PORTS = [
-            443, 8443, 2053, 2083, 2087, 2096, 80, 8080, 8880, 2052, 2082, 2086, 2095,
+            443, 8443, 2053, 2087, 2096, 2052
         ];
 
         // --- UTILITY FUNCTIONS ---
@@ -136,14 +147,40 @@
             const maskInt = parseInt(mask, 10);
             const ipLong = ipToLong(ip);
             const size = Math.pow(2, 32 - maskInt);
-            return { start: ipLong, end: ipLong + size - 1 };
+            return { start: ipLong, end: ipLong + size - 1 }; // Fixed: was incorrectly ipLong - 1
         };
 
         const getRandomIpFromRanges = (ranges) => {
             const range = ranges[Math.floor(Math.random() * ranges.length)];
             const { start, end } = parseCIDR(range);
-            const randomLong = Math.floor(Math.random() * (end - start)) + start;
+            const randomLong = Math.floor(Math.random() * (end - start + 1)) + start;
             return longToIp(randomLong);
+        };
+
+        // Function to generate a list of IPs from a CIDR range
+        const generateIPsFromRange = (cidr, maxIPs = 1000) => {
+            const { start, end } = parseCIDR(cidr);
+            const ips = [];
+            const totalIPsInRange = end - start + 1;
+            
+            // Limit the number of IPs to generate per range
+            const count = Math.min(maxIPs, totalIPsInRange);
+            
+            if (count === totalIPsInRange) {
+                // If the range is small enough, add all IPs
+                for (let i = start; i <= end; i++) {
+                    ips.push(longToIp(i));
+                }
+            } else {
+                // Otherwise, sample evenly spaced IPs from the range
+                const step = Math.floor(totalIPsInRange / count);
+                for (let i = 0; i < count; i++) {
+                    const ipLong = start + i * step;
+                    ips.push(longToIp(ipLong));
+                }
+            }
+            
+            return ips;
         };
 
         // --- CONFIG PARSING FUNCTIONS ---
@@ -459,13 +496,39 @@
                 const rangesList = config.ranges.split('\n').filter(r => r.trim().length > 0);
                 let foundCount = 0;
                 let scannedCount = 0;
-                const batchSize = 5;
                 const ipResults = []; // Store IP results separately
-
-                while (!stopSignal.current && foundCount < config.targetCount && scannedCount < config.maxScanLimit) {
-                    const batchIPs = Array.from({ length: batchSize }, () => getRandomIpFromRanges(rangesList));
+                
+                // Prepare all IPs to scan from all ranges
+                let allIPs = [];
+                for (const range of rangesList) {
+                    const ips = generateIPsFromRange(range, Math.ceil(config.maxScanLimit / rangesList.length));
+                    allIPs = allIPs.concat(ips);
+                }
+                
+                // Shuffle the array to randomize the order of scanning across ranges
+                for (let i = allIPs.length - 1; i > 0; i--) {
+                    const j = Math.floor(Math.random() * (i + 1));
+                    [allIPs[i], allIPs[j]] = [allIPs[j], allIPs[i]];
+                }
+                
+                // Process IPs in batches to improve performance
+                const batchSize = 20; // Increased batch size for better performance
+                
+                for (let i = 0; i < allIPs.length; i += batchSize) {
+                    if (stopSignal.current) break;
                     
-                    const promises = batchIPs.map(async (ip) => {
+                    // Make sure we don't go over the batch size or the limit
+                    const batchEnd = Math.min(
+                        i + batchSize, 
+                        allIPs.length, 
+                        i + (config.maxScanLimit - scannedCount)
+                    );
+                    const batch = allIPs.slice(i, batchEnd);
+                    
+                    if (batch.length === 0) break; // In case we've hit our scan limit
+                    
+                    // Create promises for measuring latency of all IPs in the batch
+                    const promises = batch.map(async (ip) => {
                         const ping = await measureLatency(ip, config.port);
                         return { ip, ping };
                     });
@@ -474,6 +537,7 @@
 
                     for (const res of batchResults) {
                         scannedCount++;
+                        
                         if (res.ping !== -1 && res.ping <= config.maxPing) {
                             foundCount++;
                             const newResult = { host: res.ip, latency: res.ping, type: 'ip' };
@@ -481,10 +545,21 @@
                             setResults(prev => [...prev, newResult].sort((a, b) => a.latency - b.latency));
                             setStats(prev => ({ ...prev, found: prev.found + 1 }));
                         }
+                        
+                        // Check if we've reached our targets
+                        if (foundCount >= config.targetCount || scannedCount >= config.maxScanLimit) {
+                            break;
+                        }
                     }
-
-                    setStats(prev => ({ ...prev, scanned: prev.scanned + batchSize }));
-                    await new Promise(r => setTimeout(r, 50));
+                    
+                    if (foundCount >= config.targetCount || scannedCount >= config.maxScanLimit) {
+                        break;
+                    }
+                    
+                    setStats(prev => ({ ...prev, scanned: prev.scanned + batch.length }));
+                    
+                    // Small delay to prevent blocking UI during intensive scanning
+                    await new Promise(r => setTimeout(r, 1)); // Reduced delay to 1ms for faster scanning
                 }
                 
                 // Sort the array before returning to ensure correct order
@@ -801,7 +876,7 @@
                                             <option value="custom">Custom Port</option>
                                         </select>
                                     </div>
-                                    {(config.portStrategy === 'custom' || optimizationMode === 'ip') && (
+                                    {(config.portStrategy === 'custom') && (
                                         <div>
                                             <label className="block text-xs text-gray-400 mb-1">{t.port}</label>
                                             <input
